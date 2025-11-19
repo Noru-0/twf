@@ -72,7 +72,7 @@ jobs:
         platforms: linux/amd64,linux/arm64
         build-args: |
           NODE_ENV=production
-          NEXT_PUBLIC_API_URL=${{ github.ref == 'refs/heads/develop' && secrets.NEXT_PUBLIC_API_URL_STAGING || secrets.NEXT_PUBLIC_API_URL || 'http://localhost:3000' }}
+          NEXT_PUBLIC_API_URL=${{ github.ref == 'refs/heads/develop' && 'https://staging-api.your-domain.com' || 'https://api.your-domain.com' }}
           MICROSERVICE_VARIANT=${{ matrix.variant }}
 
   # Security scanning for all variants
