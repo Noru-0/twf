@@ -80,6 +80,10 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     
     strategy:
       matrix:
@@ -94,7 +98,7 @@ jobs:
         output: '${{ matrix.variant }}-trivy-results.sarif'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: always()
       with:
         sarif_file: '${{ matrix.variant }}-trivy-results.sarif'
@@ -105,9 +109,6 @@ jobs:
     needs: [build-and-push, security-scan]
     if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment:
-      name: staging
-      url: ${{ steps.deploy.outputs.url }}
     
     steps:
     - name: Deploy to staging environment
