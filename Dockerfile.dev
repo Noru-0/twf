@@ -1,0 +1,33 @@
+# Development Dockerfile for Frontend
+FROM node:18-alpine
+
+# Install libc6-compat for Alpine Linux compatibility
+RUN apk add --no-cache libc6-compat curl
+
+# Set the working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install all dependencies
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Change ownership of the app directory
+RUN chown -R nextjs:nodejs /app
+
+# Switch to non-root user
+USER nextjs
+
+# Expose the port
+EXPOSE 3000
+
+# Command for development
+CMD ["npm", "run", "dev"]

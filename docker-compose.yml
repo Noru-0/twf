@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # Frontend Application
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: bus-ticket-frontend-app
+    ports:
+      - "8000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+      - WATCHPACK_POLLING=true
+    networks:
+      - frontend-network
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    restart: unless-stopped
+
+  # Frontend for Production
+  frontend-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: bus-ticket-frontend-prod
+    ports:
+      - "8001:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+    networks:
+      - frontend-network
+    profiles:
+      - production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx for production (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: bus-ticket-frontend-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend-prod
+    networks:
+      - frontend-network
+    profiles:
+      - production
+      - nginx
+    restart: unless-stopped
+
+networks:
+  frontend-network:
+    driver: bridge

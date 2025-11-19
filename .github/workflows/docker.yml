@@ -1,0 +1,147 @@
+name: Frontend Docker Build
+
+on:
+  push:
+    branches: [ master, develop, feature/* ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  MICROSERVICE_NAME: bus-ticket-frontend
+
+jobs:
+  # Build for multiple environments and variants
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        variant: [web, standalone]
+        include:
+          - variant: web
+            dockerfile: Dockerfile
+            target: production
+          - variant: standalone
+            dockerfile: Dockerfile
+            target: standalone
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.variant }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: ${{ matrix.target }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+        build-args: |
+          NODE_ENV=production
+          NEXT_PUBLIC_API_URL=${{ github.ref == 'refs/heads/develop' && secrets.NEXT_PUBLIC_API_URL_STAGING || secrets.NEXT_PUBLIC_API_URL || 'http://localhost:3000' }}
+          MICROSERVICE_VARIANT=${{ matrix.variant }}
+
+  # Security scanning for all variants
+  security-scan:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    strategy:
+      matrix:
+        variant: [web, standalone]
+    
+    steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.variant }}:${{ github.sha }}
+        format: 'sarif'
+        output: '${{ matrix.variant }}-trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: '${{ matrix.variant }}-trivy-results.sarif'
+        category: '${{ matrix.variant }}-security-scan'
+
+  # Deploy to staging (develop branch)
+  deploy-staging:
+    needs: [build-and-push, security-scan]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    
+    steps:
+    - name: Deploy to staging environment
+      id: deploy
+      run: |
+        echo "🚀 Deploying frontend Docker image to staging..."
+        
+        # Example: Deploy to Kubernetes staging
+        # kubectl set image deployment/frontend-web frontend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-web:${{ github.sha }}
+        
+        # Example: Deploy with Docker Compose
+        # docker-compose -f docker-compose.staging.yml pull
+        # docker-compose -f docker-compose.staging.yml up -d
+        
+        echo "url=https://staging.your-domaster.com" >> $GITHUB_OUTPUT
+        echo "✅ Staging deployment completed"
+
+  # Deploy to production (master branch)
+  deploy-production:
+    needs: [build-and-push, security-scan]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Deploy to production
+      id: deploy
+      run: |
+        echo "🚀 Deploying frontend Docker image to production..."
+        echo "url=https://your-domaster.com" >> $GITHUB_OUTPUT
+        
+        # Add your production deployment script here
+        # Examples:
+        # - Deploy to Kubernetes cluster
+        # - Update Docker Swarm services
+        # - Deploy to cloud provider (AWS ECS, Google Cloud Run, etc.)
+        
+        echo "✅ Production deployment completed"

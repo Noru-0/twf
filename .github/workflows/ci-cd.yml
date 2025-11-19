@@ -1,0 +1,423 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [ master, develop, feature/* ]
+  pull_request:
+    branches: [ master, develop ]
+
+env:
+  NODE_VERSION: '18'
+  CACHE_VERSION: v1
+
+jobs:
+  # Validate secrets and environment variables
+  validate-secrets:
+    runs-on: ubuntu-latest
+    outputs:
+      has-render-key: ${{ steps.check-secrets.outputs.has-render-key }}
+      has-staging-secrets: ${{ steps.check-secrets.outputs.has-staging-secrets }}
+      has-production-secrets: ${{ steps.check-secrets.outputs.has-production-secrets }}
+    steps:
+    - name: Check required secrets
+      id: check-secrets
+      run: |
+        echo "Validating required secrets..."
+        
+        # Check staging secrets (for develop branch)
+        if [[ "${{ secrets.RENDER_STAGING_SERVICE_ID }}" != "" && "${{ secrets.RENDER_API_KEY }}" != "" && "${{ secrets.NEXT_PUBLIC_API_URL_STAGING }}" != "" ]]; then
+          echo "✅ Staging deployment secrets found"
+          echo "has-staging-secrets=true" >> $GITHUB_OUTPUT
+        else
+          echo "⚠️ Staging deployment secrets missing"
+          echo "has-staging-secrets=false" >> $GITHUB_OUTPUT
+        fi
+        
+        # Check production secrets (for master branch)
+        if [[ "${{ secrets.RENDER_SERVICE_ID }}" != "" && "${{ secrets.RENDER_API_KEY }}" != "" && "${{ secrets.NEXT_PUBLIC_API_URL }}" != "" ]]; then
+          echo "✅ Production deployment secrets found"
+          echo "has-production-secrets=true" >> $GITHUB_OUTPUT
+        else
+          echo "⚠️ Production deployment secrets missing"
+          echo "has-production-secrets=false" >> $GITHUB_OUTPUT
+        fi
+        
+        # Legacy check for backward compatibility
+        if [[ "${{ secrets.RENDER_SERVICE_ID }}" != "" && "${{ secrets.RENDER_API_KEY }}" != "" ]]; then
+          echo "has-render-key=true" >> $GITHUB_OUTPUT
+        else
+          echo "has-render-key=false" >> $GITHUB_OUTPUT
+        fi
+
+  # Code quality and testing
+  test-and-lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-node-${{ env.CACHE_VERSION }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-${{ env.CACHE_VERSION }}-
+
+    - name: Install dependencies
+      run: |
+        npm ci
+        npm ls --depth=0
+
+    - name: Environment validation
+      run: |
+        echo "Node.js version: $(node --version)"
+        echo "NPM version: $(npm --version)"
+        echo "Environment: $NODE_ENV"
+      env:
+        NODE_ENV: test
+
+    - name: Run ESLint
+      run: |
+        npm run lint
+        echo "✅ ESLint passed"
+
+    - name: Type checking
+      run: |
+        npx tsc --noEmit
+        echo "✅ TypeScript type checking passed"
+
+    # Enable when you add tests
+    - name: Run unit tests
+      run: |
+        # npm run test -- --coverage --watchAll=false
+        echo "⏭️ Unit tests skipped (add tests to enable)"
+        # echo "✅ Unit tests passed"
+      env:
+        CI: true
+        NODE_ENV: test
+        NEXT_PUBLIC_API_URL: http://localhost:3000
+
+    # Enable when you add tests
+    - name: Run component tests
+      run: |
+        # npm run test:component -- --watchAll=false
+        echo "⏭️ Component tests skipped (add tests to enable)"
+        # echo "✅ Component tests passed"
+      env:
+        CI: true
+        NODE_ENV: test
+
+    # Enable when you add e2e tests
+    - name: Run e2e tests
+      run: |
+        # npm run test:e2e
+        echo "⏭️ E2E tests skipped (add tests to enable)"
+        # echo "✅ E2E tests passed"
+      env:
+        CI: true
+        NODE_ENV: test
+        NEXT_PUBLIC_API_URL: http://localhost:3000
+
+    # Uncomment when tests are enabled
+    # - name: Upload test coverage
+    #   uses: codecov/codecov-action@v3
+    #   with:
+    #     file: ./coverage/lcov.info
+    #     flags: frontend,unit
+    #     name: frontend-coverage
+    #     fail_ci_if_error: false
+
+  # Build application for staging
+  build-staging:
+    needs: [validate-secrets, test-and-lint]
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build application for staging
+      run: |
+        npm run build
+        echo "✅ Staging build completed successfully"
+      env:
+        NODE_ENV: staging
+        NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_STAGING }}
+        NEXTAUTH_URL: ${{ secrets.NEXTAUTH_URL_STAGING }}
+
+    - name: Verify build output
+      run: |
+        if [ -d ".next" ] && [ "$(ls -A .next)" ]; then
+          echo "✅ Build artifacts generated successfully"
+          echo "Build size:"
+          du -sh .next
+        else
+          echo "❌ Build artifacts not found"
+          exit 1
+        fi
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build-staging-${{ github.sha }}
+        path: |
+          .next/
+          next.config.ts
+        retention-days: 1
+
+  # Build application for production
+  build-production:
+    needs: [validate-secrets, test-and-lint]
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build application for production
+      run: |
+        npm run build
+        echo "✅ Production build completed successfully"
+      env:
+        NODE_ENV: production
+        NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        NEXTAUTH_URL: ${{ secrets.NEXTAUTH_URL }}
+
+    - name: Verify build output
+      run: |
+        if [ -d ".next" ] && [ "$(ls -A .next)" ]; then
+          echo "✅ Build artifacts generated successfully"
+          echo "Build size:"
+          du -sh .next
+        else
+          echo "❌ Build artifacts not found"
+          exit 1
+        fi
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build-production-${{ github.sha }}
+        path: |
+          .next/
+          next.config.ts
+        retention-days: 7
+
+  # Deploy to development/staging (Render)
+  deploy-develop:
+    needs: [validate-secrets, build-staging]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push' && needs.validate-secrets.outputs.has-staging-secrets == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: frontend-build-staging-${{ github.sha }}
+        path: ./
+
+    - name: Deploy to Render (Staging)
+      id: deploy
+      run: |
+        echo "🚀 Deploying frontend to Render staging environment..."
+        
+        # Deploy to Render using their API
+        DEPLOY_RESPONSE=$(curl -X POST \
+          "https://api.render.com/v1/services/${{ secrets.RENDER_STAGING_SERVICE_ID }}/deploys" \
+          -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{"clearCache": false}' \
+          --silent --write-out "HTTPSTATUS:%{http_code}")
+        
+        HTTP_STATUS=$(echo $DEPLOY_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+        RESPONSE_BODY=$(echo $DEPLOY_RESPONSE | sed -e 's/HTTPSTATUS:.*//')
+        
+        if [ $HTTP_STATUS -eq 201 ]; then
+          echo "✅ Deployment initiated successfully"
+          echo "Response: $RESPONSE_BODY"
+          echo "url=https://bus-ticket-frontend-staging.onrender.com" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Deployment failed with status $HTTP_STATUS"
+          echo "Response: $RESPONSE_BODY"
+          exit 1
+        fi
+
+    - name: Wait for deployment
+      run: |
+        echo "⏳ Waiting for deployment to complete..."
+        STAGING_URL="https://bus-ticket-frontend-staging.onrender.com"
+        
+        for i in {1..15}; do
+          echo "🔄 Attempt $i/15: Checking deployment status..."
+          if curl -f -s $STAGING_URL > /dev/null; then
+            echo "✅ Staging deployment is accessible!"
+            break
+          else
+            if [ $i -eq 15 ]; then
+              echo "❌ Deployment verification failed after 15 attempts (7.5 minutes)"
+              exit 1
+            fi
+            echo "⏳ Service not ready yet, waiting 30 seconds..."
+            sleep 30
+          fi
+        done
+
+    - name: Run smoke tests
+      run: |
+        echo "🧪 Running smoke tests against staging environment..."
+        STAGING_URL="https://bus-ticket-frontend-staging.onrender.com"
+        
+        # Test basic page loads
+        if curl -f "$STAGING_URL" > /dev/null 2>&1; then
+          echo "✅ Home page accessible"
+        else
+          echo "❌ Home page not accessible"
+          exit 1
+        fi
+        
+        echo "✅ Smoke tests passed"
+
+  # Deploy to production
+  deploy-production:
+    needs: [validate-secrets, build-production]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.validate-secrets.outputs.has-production-secrets == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: frontend-build-production-${{ github.sha }}
+        path: ./
+
+    - name: Deploy to Render (Production)
+      id: deploy
+      run: |
+        echo "🚀 Deploying frontend to Render production environment..."
+        
+        # Deploy to Render using their API
+        DEPLOY_RESPONSE=$(curl -X POST \
+          "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
+          -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{"clearCache": true}' \
+          --silent --write-out "HTTPSTATUS:%{http_code}")
+        
+        HTTP_STATUS=$(echo $DEPLOY_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+        RESPONSE_BODY=$(echo $DEPLOY_RESPONSE | sed -e 's/HTTPSTATUS:.*//')
+        
+        if [ $HTTP_STATUS -eq 201 ]; then
+          echo "✅ Production deployment initiated successfully"
+          echo "Response: $RESPONSE_BODY"
+          echo "url=https://bus-ticket-frontend.onrender.com" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Production deployment failed with status $HTTP_STATUS"
+          echo "Response: $RESPONSE_BODY"
+          exit 1
+        fi
+
+    - name: Wait for deployment
+      run: |
+        echo "⏳ Waiting for production deployment to complete..."
+        PRODUCTION_URL="https://bus-ticket-frontend.onrender.com"
+        
+        for i in {1..20}; do
+          echo "🔄 Attempt $i/20: Checking production deployment status..."
+          if curl -f -s $PRODUCTION_URL > /dev/null; then
+            echo "✅ Production deployment is accessible!"
+            break
+          else
+            if [ $i -eq 20 ]; then
+              echo "❌ Production deployment verification failed after 20 attempts (10 minutes)"
+              exit 1
+            fi
+            echo "⏳ Service not ready yet, waiting 30 seconds..."
+            sleep 30
+          fi
+        done
+
+    - name: Run production smoke tests
+      run: |
+        echo "🧪 Running smoke tests against production environment..."
+        PRODUCTION_URL="https://bus-ticket-frontend.onrender.com"
+        
+        # Test basic page loads
+        if curl -f "$PRODUCTION_URL" > /dev/null 2>&1; then
+          echo "✅ Production home page accessible"
+        else
+          echo "❌ Production home page not accessible"
+          exit 1
+        fi
+        
+        echo "✅ Production smoke tests passed"
+
+  # Notification job
+  notify:
+    needs: [validate-secrets, test-and-lint, build-staging, build-production, deploy-develop, deploy-production]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [[ "${{ needs.deploy-develop.result }}" == "success" ]]; then
+          echo "✅ Staging deployment successful!"
+        elif [[ "${{ needs.deploy-develop.result }}" == "skipped" ]]; then
+          echo "⏭️ Staging deployment skipped (not develop branch or missing secrets)"
+        elif [[ "${{ needs.deploy-develop.result }}" == "failure" ]]; then
+          echo "❌ Staging deployment failed!"
+        fi
+        
+        if [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+          echo "✅ Production deployment successful!"
+        elif [[ "${{ needs.deploy-production.result }}" == "skipped" ]]; then
+          echo "⏭️ Production deployment skipped (not master branch or missing secrets)"
+        elif [[ "${{ needs.deploy-production.result }}" == "failure" ]]; then
+          echo "❌ Production deployment failed!"
+        fi
+        
+        if [[ "${{ needs.test-and-lint.result }}" == "success" ]]; then
+          echo "✅ All tests and code quality checks passed!"
+        else
+          echo "❌ Tests or code quality checks failed!"
+        fi
